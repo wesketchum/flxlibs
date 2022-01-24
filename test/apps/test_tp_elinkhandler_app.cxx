@@ -97,7 +97,7 @@ main(int /*argc*/, char** /*argv[]*/)
   auto& tpparser = elinks[5 * 64]->get_parser();
   tpparser.process_shortchunk_func = [&](const felix::packetformat::shortchunk& shortchunk) {
     if (firstTPshort) {
-      TLOG() << "SC Lenght: " << shortchunk.length;
+      TLOG() << "SC Length: " << shortchunk.length;
       firstTPshort = false;
     }
   };
@@ -111,7 +111,7 @@ main(int /*argc*/, char** /*argv[]*/)
   tpparser.process_chunk_func = [&](const felix::packetformat::chunk& chunk) {
     ++total_counter;
     if (firstTPchunk) {
-      //TLOG() << "C Lenght: " << chunk.length();
+      //TLOG() << "C Length: " << chunk.length();
 
       auto subchunk_data = chunk.subchunks();
       auto subchunk_sizes = chunk.subchunk_lengths();
@@ -128,15 +128,16 @@ main(int /*argc*/, char** /*argv[]*/)
 
       if ((uint32_t)(rwtpp->m_head.m_crate_no) == 21) { // RS FIXME -> read from cmdline the list of signatures loaded to EMU
         ++good_counter;
-        std::ostringstream oss;
-        rwtpp->m_head.print(oss);
-        TLOG() << oss.str();
       }
+
+      std::ostringstream oss;
+      rwtpp->m_head.print(oss);
+      TLOG() << oss.str();
 
       types::RAW_WIB_TRIGGERPRIMITIVE_STRUCT rwtps;
       rwtps.rwtp.reset(rwtpp);
 
-      if (amount > 1000) {
+      if (amount > 10000) {
         firstTPchunk = false;
       } else {
         amount++;
@@ -187,7 +188,7 @@ main(int /*argc*/, char** /*argv[]*/)
   }
 
   TLOG() << "GOOD counter: " << good_counter;
-  TLOG() << "Total counter" << total_counter;
+  TLOG() << "Total counter:" << total_counter;
 
   TLOG() << "Number of blocks DMA-d: " << block_counter;
 
