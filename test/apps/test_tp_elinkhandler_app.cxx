@@ -20,6 +20,8 @@
 
 #include <atomic>
 #include <chrono>
+#include <fstream>
+#include <future>
 #include <map>
 #include <memory>
 #include <string>
@@ -27,6 +29,15 @@
 
 using namespace dunedaq::flxlibs;
 using namespace dunedaq::readout;
+
+
+const constexpr std::size_t USER_PAYLOAD_SIZE = 5568; // for 12: 5568
+struct USER_PAYLOAD_STRUCT
+{
+  char data[USER_PAYLOAD_SIZE];
+};
+
+using LatencyBuffer = folly::ProducerConsumerQueue<USER_PAYLOAD_STRUCT>;
 
 int
 main(int /*argc*/, char** /*argv[]*/)
@@ -52,9 +63,12 @@ main(int /*argc*/, char** /*argv[]*/)
   CardWrapper flx;
   std::map<int, std::unique_ptr<ElinkConcept>> elinks;
 
+  TLOG() << "Creating Elink models...";
   // 5 elink handlers
   for (int i = 0; i < 5; ++i) {
-    elinks[i * 64] = createElinkModel("raw_tp");
+    //elinks[i * 64] = createElinkModel("wib");
+    TLOG() << "Elink " << i << "...";
+    elinks[i * 64] = std::make_unique<ElinkModel<USER_PAYLOAD_STRUCT>>();  
     auto& handler = elinks[i * 64];
     handler->init(cmd_params, 100000);
     handler->conf(cmd_params, 4096, true);
@@ -62,11 +76,18 @@ main(int /*argc*/, char** /*argv[]*/)
   }
 
   // Add TP link
-  elinks[5 * 64] = createElinkModel("raw_tp");
+  // elinks[5 * 64] = createElinkModel("raw_tp");
+  // auto& tphandler = elinks[5 * 64];
+  // tphandler->init(cmd_params, 100000);
+  // tphandler->conf(cmd_params, 4096, true);
+  TLOG() << "Creating TP link...";
+  elinks[5 * 64] = std::make_unique<ElinkModel<USER_PAYLOAD_STRUCT>>();
   auto& tphandler = elinks[5 * 64];
   tphandler->init(cmd_params, 100000);
   tphandler->conf(cmd_params, 4096, true);
-  
+  std::unique_ptr<folly::ProducerConsumerQueue<USER_PAYLOAD_STRUCT>> tpbuffer = std::make_unique<LatencyBuffer>(1000000);
+
+
   // Modify a specific elink handler
   bool first = true;
   int firstWIBframes = 0;
@@ -99,7 +120,7 @@ main(int /*argc*/, char** /*argv[]*/)
   auto& tpparser = elinks[5 * 64]->get_parser();
   tpparser.process_shortchunk_func = [&](const felix::packetformat::shortchunk& shortchunk) {
     if (firstTPshort) {
-      TLOG() << "SC Lenght: " << shortchunk.length;
+      TLOG() << "SC Length: " << shortchunk.length;
       firstTPshort = false;
     }
   };
@@ -121,11 +142,17 @@ main(int /*argc*/, char** /*argv[]*/)
 
       uint32_t bytes_copied_chunk = 0;
       dunedaq::detdataformats::RawWIBTp* rwtpp = static_cast<dunedaq::detdataformats::RawWIBTp*>(std::malloc(chunk.length())); //+ sizeof(int)));
+      USER_PAYLOAD_STRUCT payload;
       //auto* rwtpip = reinterpret_cast<uint8_t*>(rwtpp);
       for (unsigned i = 0; i < n_subchunks; i++) {
         parsers::dump_to_buffer(
           subchunk_data[i], subchunk_sizes[i], static_cast<void*>(rwtpp), bytes_copied_chunk, chunk.length());
+        parsers::dump_to_buffer(
+          subchunk_data[i], subchunk_sizes[i], static_cast<void*>(&payload.data), bytes_copied_chunk, USER_PAYLOAD_SIZE);
         bytes_copied_chunk += subchunk_sizes[i];
+      }
+      if (!tpbuffer->write(std::move(payload))) {
+        // Buffer full
       }
 
       if ((uint32_t)(rwtpp->get_crate_no()) == 21) { // RS FIXME -> read from cmdline the list of signatures loaded to EMU
@@ -193,10 +220,40 @@ main(int /*argc*/, char** /*argv[]*/)
     handler->stop(cmd_params);
   }
 
+  // Filewriter
+  std::function<size_t(std::string, std::unique_ptr<LatencyBuffer>&)> write_to_file =
+    [&](std::string filename, std::unique_ptr<LatencyBuffer>& buffer) {
+      std::ofstream linkfile(filename, std::ios::out | std::ios::binary);
+      size_t bytes_written = 0;
+      USER_PAYLOAD_STRUCT upc;
+      while (!buffer->isEmpty()) {
+        buffer->read(upc);
+        linkfile.write(upc.data, USER_PAYLOAD_SIZE);
+        bytes_written += USER_PAYLOAD_SIZE;
+      }
+      return bytes_written;
+    };
+
   TLOG() << "GOOD counter: " << good_counter;
   TLOG() << "Total counter: " << total_counter;
 
   TLOG() << "Number of blocks DMA-d: " << block_counter;
+
+  TLOG() << "Time to write out the data...";
+  std::map<int, std::future<size_t>> done_futures;
+
+  std::ostringstream fnamestr;
+  fnamestr << "slr1-" << 5 << "-data.bin";
+  TLOG() << "  -> Dropping data to file: " << fnamestr.str();
+  std::string fname = fnamestr.str();
+  done_futures[5] = std::async(std::launch::async, write_to_file, fname, std::ref(tpbuffer));
+
+
+  TLOG() << "Wait for them. This might take a while...";
+  for (auto& [id, fut] : done_futures) {
+    size_t bw = fut.get();
+    TLOG() << "[" << id << "] Bytes written: " << bw;
+  }
 
   TLOG() << "Exiting.";
   return 0;
