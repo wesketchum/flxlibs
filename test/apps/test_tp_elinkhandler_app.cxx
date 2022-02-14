@@ -18,6 +18,7 @@
 #include "packetformat/block_format.hpp"
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <fstream>
@@ -47,7 +48,7 @@ struct TP_SUPERCHUNK_STRUCT
 using LatencyBuffer = folly::ProducerConsumerQueue<TP_SUPERCHUNK_STRUCT>;
 
 int
-main(int /*argc*/, char** /*argv[]*/)
+main(int argc, char* argv[])
 {
   // Run marker
   std::atomic<bool> marker{ true };
@@ -61,6 +62,22 @@ main(int /*argc*/, char** /*argv[]*/)
 
   // Dummy command
   nlohmann::json cmd_params = "{}"_json;
+
+  // config command to specify card ID
+  nlohmann::json conf_params_slr1 = "{\"card_id\":0}"_json;
+  if(argc > 1)
+  {
+    std::string card_id = argv[1];
+    if(std::all_of(card_id.begin(), card_id.end(), ::isdigit))
+    {
+      conf_params_slr1 = {{"card_id", std::stoi(card_id)}};
+    }
+    else
+    {
+      TLOG() << "invalid card id specified, setting id to 0.";
+    }
+  }
+
 
   // Counter
   std::atomic<int> block_counter{ 0 };
@@ -212,7 +229,7 @@ main(int /*argc*/, char** /*argv[]*/)
   flx.init(cmd_params);
 
   TLOG() << "Configure CardWrapper...";
-  flx.configure(cmd_params);
+  flx.configure(conf_params_slr1);
 
   TLOG() << "Start CardWrapper...";
   flx.start(cmd_params);
