@@ -32,12 +32,19 @@ using namespace dunedaq::readout;
 
 
 const constexpr std::size_t USER_PAYLOAD_SIZE = 5568; // for 12: 5568
-struct USER_PAYLOAD_STRUCT
+struct TP_SUPERCHUNK_STRUCT
 {
-  char data[USER_PAYLOAD_SIZE];
+  TP_SUPERCHUNK_STRUCT() {}
+  TP_SUPERCHUNK_STRUCT(size_t size, char* data)
+    : size(size)
+    , data(data)
+  {}
+
+  size_t size = 0;
+  std::unique_ptr<char> data = nullptr;
 };
 
-using LatencyBuffer = folly::ProducerConsumerQueue<USER_PAYLOAD_STRUCT>;
+using LatencyBuffer = folly::ProducerConsumerQueue<TP_SUPERCHUNK_STRUCT>;
 
 int
 main(int /*argc*/, char** /*argv[]*/)
@@ -68,7 +75,7 @@ main(int /*argc*/, char** /*argv[]*/)
   for (int i = 0; i < 5; ++i) {
     //elinks[i * 64] = createElinkModel("wib");
     TLOG() << "Elink " << i << "...";
-    elinks[i * 64] = std::make_unique<ElinkModel<USER_PAYLOAD_STRUCT>>();  
+    elinks[i * 64] = std::make_unique<ElinkModel<TP_SUPERCHUNK_STRUCT>>();  
     auto& handler = elinks[i * 64];
     handler->init(cmd_params, 100000);
     handler->conf(cmd_params, 4096, true);
@@ -81,11 +88,11 @@ main(int /*argc*/, char** /*argv[]*/)
   // tphandler->init(cmd_params, 100000);
   // tphandler->conf(cmd_params, 4096, true);
   TLOG() << "Creating TP link...";
-  elinks[5 * 64] = std::make_unique<ElinkModel<USER_PAYLOAD_STRUCT>>();
+  elinks[5 * 64] = std::make_unique<ElinkModel<TP_SUPERCHUNK_STRUCT>>();
   auto& tphandler = elinks[5 * 64];
   tphandler->init(cmd_params, 100000);
   tphandler->conf(cmd_params, 4096, true);
-  std::unique_ptr<folly::ProducerConsumerQueue<USER_PAYLOAD_STRUCT>> tpbuffer = std::make_unique<LatencyBuffer>(1000000);
+  std::unique_ptr<folly::ProducerConsumerQueue<TP_SUPERCHUNK_STRUCT>> tpbuffer = std::make_unique<LatencyBuffer>(1000000);
 
 
   // Modify a specific elink handler
@@ -134,24 +141,27 @@ main(int /*argc*/, char** /*argv[]*/)
   tpparser.process_chunk_func = [&](const felix::packetformat::chunk& chunk) {
     ++total_counter;
     if (firstTPchunk) {
-      //TLOG() << "C Length: " << chunk.length();
-
       auto subchunk_data = chunk.subchunks();
       auto subchunk_sizes = chunk.subchunk_lengths();
       auto n_subchunks = chunk.subchunk_number();
+      auto chunk_length = chunk.length();
+      
+      TLOG() << "TP subchunk number: " << n_subchunks; 
+      TLOG() << "TP chunk length: " << chunk_length;
 
       uint32_t bytes_copied_chunk = 0;
-      dunedaq::detdataformats::RawWIBTp* rwtpp = static_cast<dunedaq::detdataformats::RawWIBTp*>(std::malloc(chunk.length())); //+ sizeof(int)));
-      USER_PAYLOAD_STRUCT payload;
+      dunedaq::detdataformats::RawWIBTp* rwtpp = static_cast<dunedaq::detdataformats::RawWIBTp*>(std::malloc(chunk_length)); //+ sizeof(int)));
       //auto* rwtpip = reinterpret_cast<uint8_t*>(rwtpp);
+      
+      char* payload = static_cast<char*>(malloc(chunk_length * sizeof(char)));
+      TP_SUPERCHUNK_STRUCT payload_struct(chunk_length, payload);
       for (unsigned i = 0; i < n_subchunks; i++) {
+        TLOG() << "TP subchunk " << i << " length: " << subchunk_sizes[i];
         parsers::dump_to_buffer(
-          subchunk_data[i], subchunk_sizes[i], static_cast<void*>(rwtpp), bytes_copied_chunk, chunk.length());
-        parsers::dump_to_buffer(
-          subchunk_data[i], subchunk_sizes[i], static_cast<void*>(&payload.data), bytes_copied_chunk, USER_PAYLOAD_SIZE);
+          subchunk_data[i], subchunk_sizes[i], static_cast<void*>(payload), bytes_copied_chunk, chunk_length);
         bytes_copied_chunk += subchunk_sizes[i];
       }
-      if (!tpbuffer->write(std::move(payload))) {
+      if (!tpbuffer->write(std::move(payload_struct))) {
         // Buffer full
       }
 
@@ -166,7 +176,7 @@ main(int /*argc*/, char** /*argv[]*/)
           << " fiber:" << unsigned(rwtpp->get_fiber_no()) << " crate:" << unsigned(rwtpp->get_crate_no()) << " timestamp:" << rwtpp->get_timestamp();
       oss << '\n';
       TLOG() << oss.str();
-      
+
       //stypes::RAW_WIB_TP_STRUCT rwtps;
       //rwtps.rwtp.reset(rwtpp);
 
@@ -225,19 +235,15 @@ main(int /*argc*/, char** /*argv[]*/)
     [&](std::string filename, std::unique_ptr<LatencyBuffer>& buffer) {
       std::ofstream linkfile(filename, std::ios::out | std::ios::binary);
       size_t bytes_written = 0;
-      USER_PAYLOAD_STRUCT upc;
+      TP_SUPERCHUNK_STRUCT spc;
       while (!buffer->isEmpty()) {
-        buffer->read(upc);
-        linkfile.write(upc.data, USER_PAYLOAD_SIZE);
-        bytes_written += USER_PAYLOAD_SIZE;
+        TLOG() << "chunk length: " << spc.size;
+        buffer->read(spc);
+        linkfile.write(spc.data.get(), spc.size);
+        bytes_written += spc.size;
       }
       return bytes_written;
     };
-
-  TLOG() << "GOOD counter: " << good_counter;
-  TLOG() << "Total counter: " << total_counter;
-
-  TLOG() << "Number of blocks DMA-d: " << block_counter;
 
   TLOG() << "Time to write out the data...";
   std::map<int, std::future<size_t>> done_futures;
@@ -254,6 +260,11 @@ main(int /*argc*/, char** /*argv[]*/)
     size_t bw = fut.get();
     TLOG() << "[" << id << "] Bytes written: " << bw;
   }
+
+  TLOG() << "GOOD counter: " << good_counter;
+  TLOG() << "Total counter: " << total_counter;
+
+  TLOG() << "Number of blocks DMA-d: " << block_counter;
 
   TLOG() << "Exiting.";
   return 0;
