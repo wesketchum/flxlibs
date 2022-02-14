@@ -64,17 +64,18 @@ main(int argc, char* argv[])
   nlohmann::json cmd_params = "{}"_json;
 
   // config command to specify card ID
-  nlohmann::json conf_params_slr1 = "{\"card_id\":0}"_json;
-  if(argc > 1)
+  nlohmann::json conf_params_slr1 = "{\"card_id\":0,\"logical_unit\":0}"_json;
+  if(argc > 2)
   {
     std::string card_id = argv[1];
-    if(std::all_of(card_id.begin(), card_id.end(), ::isdigit))
+    std::string logical_unit = argv[2];
+    if(std::all_of(card_id.begin(), card_id.end(), ::isdigit) && std::all_of(logical_unit.begin(), logical_unit.end(), ::isdigit))
     {
-      conf_params_slr1 = {{"card_id", std::stoi(card_id)}};
+      conf_params_slr1 = {{"card_id", std::stoi(card_id)},{"logical_unit", std::stoi(logical_unit)}};
     }
     else
     {
-      TLOG() << "invalid card id specified, setting id to 0.";
+      TLOG() << "invalid card id/logical unit specified, setting id to 0 and logical unit to 0.";
     }
   }
 
